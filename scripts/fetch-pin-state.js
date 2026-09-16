@@ -40,15 +40,15 @@ const WORKFLOWS_TO_CHECK = [
 
 async function fetchWorkflowContent(repo, filePath) {
   const url = `https://api.github.com/repos/${repo}/contents/${filePath}`;
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  const headers = {
-    "User-Agent": "bluefin-docs/fetch-pin-state",
-    Accept: "application/vnd.github.v3+json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-
-  const response = await fetch(url, {
-    headers,
+  const { githubToken, githubHeaders, githubFetch } = await import(
+    "./lib/gh.js"
+  );
+  const response = await githubFetch(url, {
+    token: githubToken(),
+    headers: githubHeaders(githubToken(), {
+      accept: "application/vnd.github.v3+json",
+      userAgent: "bluefin-docs/fetch-pin-state",
+    }),
     signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) {
