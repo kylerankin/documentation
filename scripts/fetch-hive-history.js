@@ -454,7 +454,7 @@ async function main() {
       console.log("[hive-history] Fetching /api/status...");
       const res = await fetch(SNAPSHOT_API_URL, {
         headers: {
-          ...ghHeaders(),
+          ...(await ghHeaders()),
           Authorization: `Bearer ${HIVE_API_TOKEN}`,
           Accept: "application/json",
         },

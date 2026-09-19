@@ -44,18 +44,12 @@ async function fetchWorkflowContent(repo, filePath) {
     "./lib/gh.js"
   );
   const response = await githubFetch(url, {
-    token: githubToken(),
     headers: githubHeaders(githubToken(), {
       accept: "application/vnd.github.v3+json",
       userAgent: "bluefin-docs/fetch-pin-state",
     }),
     signal: AbortSignal.timeout(15000),
   });
-  if (!response.ok) {
-    throw new Error(
-      `GitHub API error for ${repo}/${filePath}: ${response.status} ${response.statusText}`,
-    );
-  }
 
   const data = await response.json();
   return Buffer.from(data.content, "base64").toString("utf8");
