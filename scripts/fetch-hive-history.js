@@ -452,9 +452,17 @@ async function main() {
   } else {
     try {
       console.log("[hive-history] Fetching /api/status...");
+      // This endpoint is the hosted Knuckle hive API, not the GitHub API, so
+      // its headers are built inline: User-Agent, the hive Bearer token, and
+      // Accept. We deliberately do NOT spread ghHeaders() here — that emits a
+      // lowercase `authorization: Bearer <GITHUB_TOKEN>`, and the uppercase
+      // `Authorization` override below would not replace it; undici joins the
+      // two keys into one mangled `authorization` header, leaking the GitHub
+      // token to the hive host (contrary to gh.js's "nothing here emits a
+      // token, a host address" contract) and 401-ing. See #1273.
       const res = await fetch(SNAPSHOT_API_URL, {
         headers: {
-          ...(await ghHeaders()),
+          "User-Agent": "bluefin-hive-history/1.0",
           Authorization: `Bearer ${HIVE_API_TOKEN}`,
           Accept: "application/json",
         },
