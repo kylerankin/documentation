@@ -2,7 +2,7 @@
 // Run: node --test scripts/build-index.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseKnowledge, searchEntries, VULN_PATTERN } from "../src/knowledge.mjs";
+import { parseKnowledge, searchEntries, citationFor, repoMatches, VULN_PATTERN } from "../src/knowledge.mjs";
 
 // Mirrors the real export, including its quirks: a `## Problem` nested inside an
 // entry body, and junk in the Tags line (`283)` is an issue number, not a tag).
@@ -97,4 +97,43 @@ test("search ranks title matches above body matches and honours the cap", () => 
   assert.match(hits[0].title, /10-theming/);
   assert.equal(searchEntries(entries, "testing", 1).length, 1);
   assert.deepEqual(searchEntries(entries, "   ", 10), []);
+});
+
+test("a title carrying repo#number attaches a citation-ready ref", () => {
+  const { entries } = parseKnowledge(FIXTURE);
+  const ref = entries.find((e) => e.title.startsWith("bluefin#517"));
+  assert.equal(ref.repo, "bluefin");
+  assert.equal(ref.number, 517);
+  assert.deepEqual(citationFor(ref), { repo: "bluefin", number: 517 });
+  // A non-ref entry cites nothing beyond what it carries.
+  const plain = citationFor(entries[0]);
+  assert.deepEqual(plain, {});
+});
+
+test("search filters by repo (short name or full path)", () => {
+  const { entries } = parseKnowledge(FIXTURE);
+  assert.equal(searchEntries(entries, "kernel", 10, { repo: "bluefin" }).length, 1);
+  // A full path still matches the short-name ref parsed from the title.
+  assert.equal(searchEntries(entries, "kernel", 10, { repo: "projectbluefin/bluefin" }).length, 1);
+  assert.equal(searchEntries(entries, "kernel", 10, { repo: "actions" }).length, 0);
+});
+
+test("search filters by since using the entry updated date", () => {
+  const entries = [
+    { title: "a", body: "x", tags: [], files: [], category: "Patterns", updated: "2026-01-01" },
+    { title: "b", body: "x", tags: [], files: [], category: "Patterns", updated: "2026-09-01" },
+  ];
+  const older = searchEntries(entries, "x", 10, { since: "2026-08-01" });
+  assert.equal(older.length, 1);
+  assert.equal(older[0].title, "b");
+  // No updated date means the since filter never matches.
+  const noDate = searchEntries([{ title: "c", body: "x", tags: [], files: [], category: "Patterns" }], "x", 10, { since: "2026-08-01" });
+  assert.equal(noDate.length, 0);
+});
+
+test("repoMatches treats a short name and a full path as the same repo", () => {
+  assert.ok(repoMatches("projectbluefin/bluefin", "bluefin"));
+  assert.ok(repoMatches("bluefin", "projectbluefin/bluefin"));
+  assert.ok(!repoMatches("projectbluefin/bluefin-lts", "bluefin"));
+  assert.ok(!repoMatches(undefined, "bluefin"));
 });

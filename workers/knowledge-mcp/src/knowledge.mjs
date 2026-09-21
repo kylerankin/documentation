@@ -15,6 +15,19 @@
 /** Entries carrying this tag are never published. */
 export const BLOCKED_TAG = "security";
 
+/** Titles embed the source as `repo#number`, e.g. `bluefin#517: ...`. */
+const TITLE_REF = /^([a-z0-9][a-z0-9.-]*)#(\d+)/i;
+
+/**
+ * Parse the `repo#number` reference a title carries. Returns `{}` when the
+ * title has none (most pattern entries are file- or topic-named, not refs).
+ */
+export function parseRef(title) {
+  const m = TITLE_REF.exec(title);
+  if (!m) return {};
+  return { repo: m[1], number: Number(m[2]) };
+}
+
 /**
  * Vulnerability language that must never reach a public index untagged.
  * The corpus already contains a live security-gate bypass, so an entry that
@@ -71,6 +84,11 @@ export function parseKnowledge(markdown) {
       .trim();
 
     const entry = { title: current.title, body, tags, files, category };
+    // A title like `bluefin#517: ...` already names its source; attach it so a
+    // search hit can cite repo + number without a follow-up `gh` call. Any other
+    // citation metadata the export carries (kind/state/updated) rides along and
+    // surfaces on the hit only when the source entry has it.
+    Object.assign(entry, parseRef(entry.title));
     const searchable = `${entry.title}\n${entry.body}`;
 
     if (tags.includes(BLOCKED_TAG)) {
@@ -98,9 +116,14 @@ export function parseKnowledge(markdown) {
 }
 
 /** Rank entries against a query. Title hits and tag hits outweigh body hits. */
-export function searchEntries(entries, query, limit) {
+export function searchEntries(entries, query, limit, { repo, since } = {}) {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return [];
+
+  const matchesRepo = (e) =>
+    !repo || repoMatches(e.repo, repo);
+  const matchesSince = (e) =>
+    !since || (e.updated && e.updated >= since);
 
   return entries
     .map((e) => {
@@ -114,8 +137,31 @@ export function searchEntries(entries, query, limit) {
       }
       return { entry: e, score };
     })
-    .filter((r) => r.score > 0)
+    .filter((r) => r.score > 0 && matchesRepo(r.entry) && matchesSince(r.entry))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((r) => r.entry);
+}
+
+/** Match a filter against a possibly-pathed repo id (short name or full path). */
+export function repoMatches(entryRepo, filter) {
+  if (!entryRepo) return false;
+  const a = entryRepo.split("/").pop();
+  const b = filter.split("/").pop();
+  return entryRepo === filter || a === b;
+}
+
+/**
+ * The citation a hit carries so a caller can confirm what it refers to without a
+ * follow-up `gh` call. repo + number come from the title; kind/state/updated are
+ * included only when the source entry has them.
+ */
+export function citationFor(entry) {
+  const citation = {};
+  if (entry.repo) citation.repo = entry.repo;
+  if (entry.number != null) citation.number = entry.number;
+  if (entry.kind) citation.kind = entry.kind;
+  if (entry.state) citation.state = entry.state;
+  if (entry.updated) citation.updated = entry.updated;
+  return citation;
 }

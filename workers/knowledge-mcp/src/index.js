@@ -9,7 +9,7 @@
 import { createMcpHandler } from "agents/mcp/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { parseKnowledge, searchEntries } from "./knowledge.mjs";
+import { parseKnowledge, searchEntries, citationFor, repoMatches } from "./knowledge.mjs";
 
 // NOTE: workerd treats every named export as a potential entrypoint, so
 // nothing but the default handler may be exported from this module.
@@ -63,18 +63,20 @@ function createServer(env) {
       inputSchema: {
         query: z.string().min(2).describe("Keywords, e.g. 'bats coverage bluefin-lts'"),
         limit: z.number().int().min(1).max(MAX_LIMIT).optional().describe("Max entries (default 10)"),
+        repo: z.string().optional().describe("Scope to one repo, e.g. 'projectbluefin/actions'"),
+        since: z.string().optional().describe("ISO date; only entries updated on or after it"),
       },
     },
-    async ({ query, limit }) => {
+    async ({ query, limit, repo, since }) => {
       try {
         const index = await loadIndex(env);
-        const hits = searchEntries(index.entries, query, Math.min(limit ?? 10, MAX_LIMIT));
+        const hits = searchEntries(index.entries, query, Math.min(limit ?? 10, MAX_LIMIT), { repo, since });
         return json({
           query,
           matched: hits.length,
           indexed: index.count,
           generated: index.generated,
-          results: hits,
+          results: hits.map((e) => ({ ...e, citation: citationFor(e) })),
         });
       } catch (err) {
         return fail(err);
@@ -108,27 +110,73 @@ function createServer(env) {
     {
       description:
         "Live Project Bluefin work queue and triage state from Hive: issues ready to " +
-        "implement, and how work is grouped by triage level. Read-only — Hive alone " +
-        "assigns work.",
+        "implement, plus in-flight buckets (implementing, PR open, blocked) with the " +
+        "lane item and its link. Read-only — Hive alone assigns work.",
       inputSchema: {
         limit: z.number().int().min(1).max(MAX_LIMIT).optional().describe("Max queue items (default 10)"),
+        repo: z.string().optional().describe("Scope the queue and triage to one repo, e.g. 'projectbluefin/server'"),
       },
     },
-    async ({ limit }) => {
+    async ({ limit, repo }) => {
       try {
         const cap = Math.min(limit ?? 10, MAX_LIMIT);
         const [queue, triage] = await Promise.all([
           hub("/api/contribute/queue"),
           hub("/api/contribute/triage"),
         ]);
+        const inRepo = (i) => !repo || repoMatches(i.repo, repo);
+        const items = (queue.queue ?? []).filter(inRepo);
         return json({
-          queue: (queue.queue ?? []).slice(0, cap),
-          queue_total: (queue.queue ?? []).length,
+          queue: items.slice(0, cap),
+          queue_total: items.length,
           triage: (triage.groups ?? []).map((g) => ({
             level: g.level,
             label: g.label,
             count: g.count,
+            // In-flight state: implementing / PR open / blocked lanes carry the
+            // item and its link so a maintainer need not re-derive it.
+            items: (g.issues ?? []).filter(inRepo),
           })),
+        });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_repo_conventions",
+    {
+      description:
+        "Structured ground rules for a repo before touching it — who merges, approvals, " +
+        "merge-queue and hands-off status — from the curated knowledge base. Read-only; " +
+        "a missing record means the knowledge base has no conventions entry for that repo.",
+      inputSchema: {
+        repo: z.string().min(1).describe("Repo path, e.g. 'projectbluefin/actions'"),
+      },
+    },
+    async ({ repo }) => {
+      try {
+        const index = await loadIndex(env);
+        // Conventions live in a curated `conventions` category. A wrong or missing
+        // record is a knowledge-base fix, not a code change here.
+        const record = index.entries.find(
+          (e) =>
+            e.category === "conventions" &&
+            (repoMatches(e.repo, repo) || e.title.includes(repo)),
+        );
+        return json({
+          repo,
+          found: Boolean(record),
+          conventions: record
+            ? {
+                repo: record.repo,
+                title: record.title,
+                rules: record.body,
+                tags: record.tags,
+                files: record.files,
+              }
+            : null,
         });
       } catch (err) {
         return fail(err);

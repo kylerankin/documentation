@@ -20,9 +20,10 @@ Point any MCP client at it — no account, no token:
 
 | Tool | Returns |
 |---|---|
-| `search_knowledge(query, limit=10)` | Matching knowledge entries — patterns, coverage gaps, CI conventions across `projectbluefin/*` |
+| `search_knowledge(query, limit=10, repo?, since?)` | Matching knowledge entries — patterns, coverage gaps, CI conventions across `projectbluefin/*`. Each hit carries a `citation` (`repo`, `number`, and `kind`/`state`/`updated` when the source entry has them). `repo` scopes to one repo; `since` (ISO date) keeps only entries updated on/after it. |
 | `get_factory_status()` | Live hub health, active contributors, actionable items, per-tier limits |
-| `get_work_queue(limit=10)` | Live ready-to-implement queue and triage counts |
+| `get_work_queue(limit=10, repo?)` | Live ready-to-implement queue and triage counts, plus in-flight triage buckets (implementing, PR open, …) with the lane item and its link. `repo` scopes both the queue and the triage buckets. |
+| `get_repo_conventions(repo)` | Structured ground rules for a repo — merge authority, approvals, merge-queue and hands-off status — from the curated knowledge base. Returns a missing record until the KB has a `conventions` entry for that repo. |
 
 Results are capped at 25 entries. The endpoint never returns the whole corpus:
 loading a ~470 KB export into an agent's context is the exact failure this
