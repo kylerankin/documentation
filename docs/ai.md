@@ -96,6 +96,42 @@ Here is an example of using devcontainers to run agents inside containers for is
 
 [Docker Model Runner](https://docs.docker.com/model-runner/) is Docker's built-in local LLM service, included in Bluefin alongside llmman. It runs models from [Docker Hub's AI catalog](https://hub.docker.com/u/ai) and exposes an OpenAI-compatible API — no separate server setup required.
 
+### Installing Docker
+
+Docker is not installed by default, which is why the Docker Model Runner needs a little setup first. To run it — or the rest of the Docker stack, including `docker compose` — install Docker Engine.
+
+The official method adds Docker's repository and installs the full stack, Compose included:
+
+```bash
+# Add Docker's official repository
+sudo dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo
+
+# Install the engine, CLI, and the Compose v2 plugin
+sudo dnf install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Start Docker now and on every boot
+sudo systemctl enable --now docker
+```
+
+This creates a `docker` group but doesn't add you to it. Add yourself so you can run `docker` without `sudo`, then log out and back in for the group change to take effect:
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Verify everything is in place:
+
+```bash
+docker version
+docker compose version
+```
+
+:::tip[Compose is already here]
+Because the `docker-compose-plugin` installs the Compose v2 plugin, Compose is available as `docker compose <command>` — no separate `docker-compose` binary needed.
+:::
+
+With Docker running, continue below to [pull and run a model](#basic-usage).
+
 ### Basic Usage
 
 ```bash
