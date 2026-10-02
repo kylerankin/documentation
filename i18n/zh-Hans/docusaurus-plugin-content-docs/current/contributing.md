@@ -188,8 +188,8 @@ Bluefin 镜像使用以下工具构建：
 1. **在 GitHub 上 fork 仓库**到你的账户：
 
    ```bash
-   # 访问 https://github.com/projectbluefin/bluefin
-   # 点击"Fork"
+   # Navigate to https://github.com/projectbluefin/bluefin
+   # Click "Fork" in the upper right
    ```
 
 2. **克隆你的 fork**：
