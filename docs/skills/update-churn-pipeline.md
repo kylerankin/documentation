@@ -52,14 +52,21 @@ Measuring release-over-release download deltas, chunkah layer reuse efficiency, 
      `fetchGhcrTagCreatedAt` returns `{}` and the sort silently degrades to tag
      text, which is the failure this tie-break exists to prevent.
    - **The build-time lookup is cached in a committed sidecar.**
-     `fetchGhcrTagCreatedAt` writes the whole per-tag crawl to
-     `static/data/update-churn-createdat.json` (aged by its own `generatedAt`,
-     the same checkout-proof signal `seed-cache.js` uses for the other seeds).
-     The packages API is rate-limited and all-or-nothing, so a failed or
-     rate-limited run returns `{}` — the sidecar lets the next run fall back to
-     yesterday's complete crawl instead of flapping to non-chronological tag
-     text (regression #1471). Only a _complete, non-empty_ crawl is written; a
-     partial or empty crawl is discarded so it never overwrites a good one.
+     `fetchGhcrTagCreatedAt` writes the series' per-tag build times to
+     `static/data/update-churn-createdat.json`, keyed by `org/pkg` so a second
+     series never overwrites or reads another package's entry. Each entry is
+     aged by its own `generatedAt` (the same checkout-proof signal
+     `seed-cache.js` uses for the other seeds). Only tags matching the series
+     `pattern` are kept — not `sha256-*.sig`, floating names, or the rest of
+     the package — and pagination stops once a page reaches a build older than
+     one day before the oldest charted tag (`seriesCutoff`), so requests and
+     file size stay bounded by the window, not the package's history.
+     The packages API is rate-limited, so a failed or rate-limited run falls
+     back to yesterday's complete crawl instead of flapping to
+     non-chronological tag text (regression #1471). Only a _complete,
+     non-empty_ crawl is written; a crawl that fails part-way is never
+     persisted, but the pages it already read (newest-first, so today's
+     builds) are layered over the cached entry for that run.
      Tags built after the cached crawl (or after the last merged chore PR that
      committed it) have no build time; `compareTagsByDate` ranks them after
      every same-day tag that has one, so the order stays a consistent total

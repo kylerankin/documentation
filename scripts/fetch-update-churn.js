@@ -54,23 +54,25 @@ const CREATED_AT_CACHE_FILE = path.join(
 );
 
 /**
- * Read the build-time sidecar cache. Returns `{}` when the file is missing,
+ * Read one package's entry from the build-time sidecar cache. The file is
+ * keyed by `org/pkg` so a second dated series never reads or clobbers another
+ * package's build times. Returns `{}` when the file or entry is missing,
  * unreadable, undated, or older than the cache window — all of which mean
- * "no reliable build times". Aged by the payload's own `generatedAt`, the same
- * checkout-proof signal `seed-cache.js` uses for the other committed seeds.
+ * "no reliable build times". Each entry is aged by its own `generatedAt`, the
+ * same checkout-proof signal `seed-cache.js` uses for the other committed seeds.
  */
-function loadCreatedAtCache(file = CREATED_AT_CACHE_FILE) {
+function loadCreatedAtCache(key, file = CREATED_AT_CACHE_FILE) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    const stamp = Date.parse(parsed?.generatedAt ?? "");
+    const entry = JSON.parse(fs.readFileSync(file, "utf8"))?.[key];
+    const stamp = Date.parse(entry?.generatedAt ?? "");
     const ageMs = Number.isFinite(stamp) ? Date.now() - stamp : Infinity;
     if (
-      parsed &&
-      typeof parsed.tags === "object" &&
-      parsed.tags !== null &&
+      entry &&
+      typeof entry.tags === "object" &&
+      entry.tags !== null &&
       ageMs < CREATED_AT_CACHE_MAX_HOURS * 3_600_000
     ) {
-      return parsed.tags;
+      return entry.tags;
     }
   } catch {
     // missing / unreadable / undated — treated as empty
@@ -79,22 +81,24 @@ function loadCreatedAtCache(file = CREATED_AT_CACHE_FILE) {
 }
 
 /**
- * Persist a complete build-time crawl to the sidecar cache. Only complete
- * crawls are written: a partial snapshot would mix build-time and tag-text
- * ordering on a later run, so a rate-limited crawl is discarded rather than
- * cached.
+ * Persist one package's complete build-time crawl to the sidecar cache,
+ * leaving other packages' entries untouched. Only complete crawls are written:
+ * a partial snapshot would mix build-time and tag-text ordering on a later run,
+ * so a rate-limited crawl is never cached.
  */
-function saveCreatedAtCache(map, file = CREATED_AT_CACHE_FILE) {
+function saveCreatedAtCache(key, map, file = CREATED_AT_CACHE_FILE) {
   try {
-    fs.writeFileSync(
-      file,
-      JSON.stringify(
-        { generatedAt: new Date().toISOString(), tags: map },
-        null,
-        2,
-      ) + "\n",
-      "utf8",
-    );
+    let all = {};
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        all = parsed;
+      }
+    } catch {
+      // missing / unreadable — start a fresh file
+    }
+    all[key] = { generatedAt: new Date().toISOString(), tags: map };
+    fs.writeFileSync(file, JSON.stringify(all, null, 2) + "\n", "utf8");
   } catch {
     // ignore — the in-run crawl is the source of truth when the API works
   }
@@ -505,14 +509,21 @@ async function getPlatformLayers(repo, tag) {
  * keeps ordering same-day tags by build time instead of flapping to non-chrono-
  * logical tag text run-to-run. Only a missing token or a never-run cache yields
  * `{}`, and then it degrades to tag text as a documented approximation.
+ * A crawl that fails part-way keeps the pages it already read (newest-first,
+ * so today's builds) layered over the cached crawl.
  *
- * @param {string} [cacheFile] sidecar cache path, overridable for tests
+ * @param {object} [options]
+ * @param {RegExp} [options.pattern] only tags matching the series are kept, so
+ *   the committed sidecar holds the series, not every tag in the package
+ * @param {number} [options.notBefore] epoch ms; pagination stops after the
+ *   first page reaching a build older than this, bounding API requests
+ * @param {string} [options.cacheFile] sidecar cache path, overridable for tests
  * @returns {Promise<Record<string, string>>} tag -> ISO 8601 build timestamp
  */
 async function fetchGhcrTagCreatedAt(
   org,
   pkg,
-  cacheFile = CREATED_AT_CACHE_FILE,
+  { pattern, notBefore, cacheFile = CREATED_AT_CACHE_FILE } = {},
 ) {
   const token = githubToken();
   if (!token) {
@@ -532,7 +543,8 @@ async function fetchGhcrTagCreatedAt(
   // per-hour limit and an all-or-nothing contract here: a rate-limited run
   // used to return {} and the whole same-day chain fell back to tag text,
   // flapping run-to-run. Yesterday's build times keep the chain chronological.
-  const cached = loadCreatedAtCache(cacheFile);
+  const cacheKey = `${org}/${pkg}`;
+  const cached = loadCreatedAtCache(cacheKey, cacheFile);
 
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -541,11 +553,13 @@ async function fetchGhcrTagCreatedAt(
     "X-GitHub-Api-Version": "2022-11-28",
   };
 
+  const fresh = {};
   try {
-    // Paginate the whole package instead of a fixed window: a tag dropped by a
-    // page cap would have no build time and fall back to tag text, which is the
-    // non-chronological ordering the cache is meant to remove.
-    let fresh = {};
+    // Paginate back to `notBefore` instead of a fixed page cap: a tag dropped
+    // by a page cap would have no build time and fall back to tag text, which
+    // is the non-chronological ordering the cache is meant to remove. Versions
+    // are listed newest-first, so once a page reaches a build older than the
+    // oldest day the series charts, later pages cannot matter.
     let url =
       `https://api.github.com/orgs/${org}/packages/container/` +
       `${encodeURIComponent(pkg)}/versions?per_page=100`;
@@ -558,17 +572,23 @@ async function fetchGhcrTagCreatedAt(
       }
       const versions = await res.json();
       if (!Array.isArray(versions)) break;
+      let reachedCutoff = false;
       for (const version of versions) {
         const built = version?.created_at;
         const tags = version?.metadata?.container?.tags;
         if (!built || !Array.isArray(tags)) continue;
+        if (Number.isFinite(notBefore) && Date.parse(built) < notBefore) {
+          reachedCutoff = true;
+        }
         for (const tag of tags) {
+          if (pattern && !pattern.test(tag)) continue;
           // The API lists versions newest-first and a tag can survive more
           // than one version, so the first hit is the newest build carrying
           // the name — which is the manifest the tag resolves to today.
           if (typeof tag === "string" && !fresh[tag]) fresh[tag] = built;
         }
       }
+      if (reachedCutoff) break;
       url =
         res.headers.get("link")?.match(/<([^>]+)>;\s*rel="next"/i)?.[1] || null;
       if (url) url = new URL(url, res.url).href;
@@ -577,15 +597,40 @@ async function fetchGhcrTagCreatedAt(
     // before reaching here, and an empty 200 must not wipe the previous good
     // crawl the fallback depends on.
     if (Object.keys(fresh).length === 0) return cached;
-    saveCreatedAtCache(fresh, cacheFile);
+    saveCreatedAtCache(cacheKey, fresh, cacheFile);
     return fresh;
   } catch (err) {
     console.warn(
       `fetch-update-churn: build timestamps unavailable for ${org}/${pkg} — ` +
         `${err.message}; falling back to cached build times`,
     );
-    return cached;
+    // Pages read before the failure are the newest builds; layer them over
+    // the cached crawl (not persisted — a partial crawl is never written).
+    return { ...cached, ...fresh };
   }
+}
+
+/**
+ * Pure function: epoch ms before which no build can affect the charted window
+ * — the start of the day of the `limit`-th newest dated tag, minus one day of
+ * slack for builds whose tag date and UTC build time straddle midnight.
+ * Returns `undefined` (no bound) when no tag carries a date.
+ *
+ * @param {string[]} tags series tags
+ * @param {number} limit window size
+ * @returns {number | undefined}
+ */
+function seriesCutoff(tags = [], limit) {
+  if (!Number.isFinite(limit) || limit <= 0) return undefined;
+  const days = tags.map(datedTagKey).filter(Boolean).sort();
+  if (days.length === 0) return undefined;
+  const day = days[Math.max(0, days.length - limit)];
+  const start = Date.UTC(
+    Number(day.slice(0, 4)),
+    Number(day.slice(4, 6)) - 1,
+    Number(day.slice(6, 8)),
+  );
+  return start - 86_400_000;
 }
 
 /**
@@ -609,7 +654,10 @@ async function discoverSeriesTags(repo, series) {
       (t) => typeof t === "string" && series?.pattern?.test(t),
     );
     if (matches.length === 0) return { tags: [], createdAt: {}, listed: false };
-    const createdAt = await fetchGhcrTagCreatedAt(org, pkg);
+    const createdAt = await fetchGhcrTagCreatedAt(org, pkg, {
+      pattern: series?.pattern,
+      notBefore: seriesCutoff(matches, series?.limit),
+    });
     const tags = selectDatedTags(allTags, series, createdAt);
     if (tags.length === 0) return { tags: [], createdAt: {}, listed: false };
     return { tags, createdAt, listed: true };
@@ -811,6 +859,7 @@ module.exports = {
   selectDatedTags,
   discoverSeriesTags,
   fetchGhcrTagCreatedAt,
+  seriesCutoff,
   loadCreatedAtCache,
   saveCreatedAtCache,
   extractDateFromTag,

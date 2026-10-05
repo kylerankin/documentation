@@ -13,6 +13,7 @@ const {
   compareTagsByDate,
   selectDatedTags,
   fetchGhcrTagCreatedAt,
+  seriesCutoff,
   loadCreatedAtCache,
   saveCreatedAtCache,
 } = require("./fetch-update-churn.js");
@@ -464,13 +465,15 @@ test("fetchGhcrTagCreatedAt: warns and returns {} on the no-token path (#1434)",
 // return {} and the whole chain flapped to non-chronological tag text. The
 // sidecar cache keeps the previous complete crawl so ordering stays stable.
 
-function writeTempCache(tags, { ageHours = 0 } = {}) {
+const CACHE_KEY = "projectbluefin/utah";
+
+function writeTempCache(tags, { ageHours = 0, key = CACHE_KEY } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "churn-createdat-"));
   const file = path.join(dir, "createdat.json");
   const stamp = new Date(Date.now() - ageHours * 3_600_000).toISOString();
   fs.writeFileSync(
     file,
-    JSON.stringify({ generatedAt: stamp, tags }, null, 2) + "\n",
+    JSON.stringify({ [key]: { generatedAt: stamp, tags } }, null, 2) + "\n",
     "utf8",
   );
   return file;
@@ -501,19 +504,26 @@ function mockFetch(responses) {
 test("loadCreatedAtCache: returns {} for a missing, undated, or stale file", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "churn-createdat-"));
   try {
-    assert.deepEqual(loadCreatedAtCache(path.join(dir, "missing.json")), {});
+    assert.deepEqual(
+      loadCreatedAtCache(CACHE_KEY, path.join(dir, "missing.json")),
+      {},
+    );
     const undated = path.join(dir, "undated.json");
-    fs.writeFileSync(undated, JSON.stringify({ tags: { a: "b" } }), "utf8");
-    assert.deepEqual(loadCreatedAtCache(undated), {});
+    fs.writeFileSync(
+      undated,
+      JSON.stringify({ [CACHE_KEY]: { tags: { a: "b" } } }),
+      "utf8",
+    );
+    assert.deepEqual(loadCreatedAtCache(CACHE_KEY, undated), {});
     const stale = writeTempCache({ a: "b" }, { ageHours: 200 });
-    assert.deepEqual(loadCreatedAtCache(stale), {});
+    assert.deepEqual(loadCreatedAtCache(CACHE_KEY, stale), {});
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test("loadCreatedAtCache: a cache older than the 24h churn window is still fresh", () => {
-  // Regression anchor for #1472: the sidecar ages on its own 7-day window
+  // Regression anchor for #1471: the sidecar ages on its own 7-day window
   // (CREATED_AT_CACHE_MAX_HOURS), independent of the 24h churn-payload window.
   // A daily cron starts late on rate-limited runs (gaps past 24h observed), so
   // a 100h-old complete crawl must still be used, not treated as stale.
@@ -522,7 +532,7 @@ test("loadCreatedAtCache: a cache older than the 24h churn window is still fresh
     { ageHours: 100 },
   );
   try {
-    assert.deepEqual(loadCreatedAtCache(file), {
+    assert.deepEqual(loadCreatedAtCache(CACHE_KEY, file), {
       "testing-20261003-ccccccc": "2026-10-03T01:00:00Z",
     });
   } finally {
@@ -536,7 +546,7 @@ test("loadCreatedAtCache: returns {} only past the 7-day sidecar window", () => 
     { ageHours: 200 },
   );
   try {
-    assert.deepEqual(loadCreatedAtCache(file), {});
+    assert.deepEqual(loadCreatedAtCache(CACHE_KEY, file), {});
   } finally {
     fs.rmSync(file, { force: true });
   }
@@ -546,7 +556,7 @@ test("loadCreatedAtCache: returns the tags of a fresh cache", () => {
     "testing-20261003-aaaaaaa": "2026-10-03T01:00:00Z",
   });
   try {
-    assert.deepEqual(loadCreatedAtCache(file), {
+    assert.deepEqual(loadCreatedAtCache(CACHE_KEY, file), {
       "testing-20261003-aaaaaaa": "2026-10-03T01:00:00Z",
     });
   } finally {
@@ -558,8 +568,8 @@ test("saveCreatedAtCache then loadCreatedAtCache round-trips", () => {
   const file = writeTempCache({});
   try {
     const tags = { "testing-20261003-bbbbbbb": "2026-10-03T02:00:00Z" };
-    saveCreatedAtCache(tags, file);
-    assert.deepEqual(loadCreatedAtCache(file), tags);
+    saveCreatedAtCache(CACHE_KEY, tags, file);
+    assert.deepEqual(loadCreatedAtCache(CACHE_KEY, file), tags);
   } finally {
     fs.rmSync(file, { force: true });
   }
@@ -575,13 +585,15 @@ test("fetchGhcrTagCreatedAt: keeps the previous crawl when the API fails (#1471)
   const file = writeTempCache(cached);
   const calls = mockFetch(() => ({ status: 403, body: [] }));
   try {
-    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", file);
+    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", {
+      cacheFile: file,
+    });
     // Falls back to the cached crawl instead of returning {} — same-day order
     // stays chronological and does not flap to tag text.
     assert.deepEqual(result, cached);
     // A failed crawl is never written, so the cache still holds the good run.
     const after = JSON.parse(fs.readFileSync(file, "utf8"));
-    assert.deepEqual(after.tags, cached);
+    assert.deepEqual(after[CACHE_KEY].tags, cached);
     // It still tried the API — this is a fallback, not a skip.
     assert.ok(calls.length > 0);
   } finally {
@@ -619,7 +631,9 @@ test("fetchGhcrTagCreatedAt: persists a complete crawl to the cache", async () =
     },
   ]);
   try {
-    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", file);
+    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", {
+      cacheFile: file,
+    });
     assert.deepEqual(result, {
       "testing-20261003-f7c24b2": "2026-10-03T09:41:52Z",
       "testing-20261003-b0d302a": "2026-10-03T18:04:11Z",
@@ -627,7 +641,7 @@ test("fetchGhcrTagCreatedAt: persists a complete crawl to the cache", async () =
     // Two pages were crawled, and the complete crawl was cached.
     assert.equal(calls.length, 2);
     const after = JSON.parse(fs.readFileSync(file, "utf8"));
-    assert.deepEqual(after.tags, result);
+    assert.deepEqual(after[CACHE_KEY].tags, result);
   } finally {
     global.fetch = nativeFetch;
     fs.rmSync(file, { force: true });
@@ -667,14 +681,161 @@ test("fetchGhcrTagCreatedAt: an empty successful crawl keeps the previous cache"
   const file = writeTempCache(cached);
   mockFetch([{ status: 200, link: null, body: [] }]);
   try {
-    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", file);
+    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", {
+      cacheFile: file,
+    });
     assert.deepEqual(result, cached);
     const after = JSON.parse(fs.readFileSync(file, "utf8"));
-    assert.deepEqual(after.tags, cached);
+    assert.deepEqual(after[CACHE_KEY].tags, cached);
   } finally {
     global.fetch = nativeFetch;
     fs.rmSync(file, { force: true });
     if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
     else process.env.GITHUB_TOKEN = savedToken;
   }
+});
+
+test("saveCreatedAtCache: keys entries by package so series do not collide", () => {
+  const file = writeTempCache({
+    "testing-20261003-aaaaaaa": "2026-10-03T01:00:00Z",
+  });
+  try {
+    saveCreatedAtCache(
+      "projectbluefin/other",
+      { "testing-20261003-bbbbbbb": "2026-10-03T02:00:00Z" },
+      file,
+    );
+    assert.deepEqual(loadCreatedAtCache(CACHE_KEY, file), {
+      "testing-20261003-aaaaaaa": "2026-10-03T01:00:00Z",
+    });
+    assert.deepEqual(loadCreatedAtCache("projectbluefin/other", file), {
+      "testing-20261003-bbbbbbb": "2026-10-03T02:00:00Z",
+    });
+    assert.deepEqual(loadCreatedAtCache("projectbluefin/missing", file), {});
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+});
+
+test("fetchGhcrTagCreatedAt: persists only tags matching the series pattern", async () => {
+  const savedToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "test-token";
+  const file = writeTempCache({});
+  mockFetch([
+    {
+      status: 200,
+      link: null,
+      body: [
+        {
+          created_at: "2026-10-03T18:04:11Z",
+          metadata: {
+            container: {
+              tags: ["testing-20261003-b0d302a", "testing", "sha256-abc.sig"],
+            },
+          },
+        },
+      ],
+    },
+  ]);
+  try {
+    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", {
+      cacheFile: file,
+      pattern: /^testing-\d{8}-[0-9a-f]{7,40}$/,
+    });
+    assert.deepEqual(result, {
+      "testing-20261003-b0d302a": "2026-10-03T18:04:11Z",
+    });
+    const after = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.deepEqual(after[CACHE_KEY].tags, result);
+  } finally {
+    global.fetch = nativeFetch;
+    fs.rmSync(file, { force: true });
+    if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = savedToken;
+  }
+});
+
+test("fetchGhcrTagCreatedAt: stops paginating once a page predates notBefore", async () => {
+  const savedToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "test-token";
+  const file = writeTempCache({});
+  const page = (built, tag) => ({
+    status: 200,
+    link: '<https://api.github.com/next>; rel="next"',
+    body: [{ created_at: built, metadata: { container: { tags: [tag] } } }],
+  });
+  const calls = mockFetch([
+    page("2026-10-03T18:00:00Z", "testing-20261003-aaaaaaa"),
+    page("2026-09-20T18:00:00Z", "testing-20260920-bbbbbbb"),
+    page("2026-09-01T18:00:00Z", "testing-20260901-ccccccc"),
+  ]);
+  try {
+    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", {
+      cacheFile: file,
+      notBefore: Date.parse("2026-09-25T00:00:00Z"),
+    });
+    assert.equal(calls.length, 2);
+    assert.deepEqual(Object.keys(result).sort(), [
+      "testing-20260920-bbbbbbb",
+      "testing-20261003-aaaaaaa",
+    ]);
+  } finally {
+    global.fetch = nativeFetch;
+    fs.rmSync(file, { force: true });
+    if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = savedToken;
+  }
+});
+
+test("fetchGhcrTagCreatedAt: merges a partial crawl over the cache on failure", async () => {
+  const savedToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "test-token";
+  const cached = { "testing-20261002-f7c24b2": "2026-10-02T09:41:52Z" };
+  const file = writeTempCache(cached);
+  mockFetch([
+    {
+      status: 200,
+      link: '<https://api.github.com/next>; rel="next"',
+      body: [
+        {
+          created_at: "2026-10-03T18:04:11Z",
+          metadata: { container: { tags: ["testing-20261003-b0d302a"] } },
+        },
+      ],
+    },
+    { status: 403, body: [] },
+  ]);
+  const origWarn = console.warn;
+  console.warn = () => undefined;
+  try {
+    const result = await fetchGhcrTagCreatedAt("projectbluefin", "utah", {
+      cacheFile: file,
+    });
+    assert.deepEqual(result, {
+      ...cached,
+      "testing-20261003-b0d302a": "2026-10-03T18:04:11Z",
+    });
+    // The partial crawl is not persisted.
+    const after = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.deepEqual(after[CACHE_KEY].tags, cached);
+  } finally {
+    console.warn = origWarn;
+    global.fetch = nativeFetch;
+    fs.rmSync(file, { force: true });
+    if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = savedToken;
+  }
+});
+
+test("seriesCutoff: day before the limit-th newest dated tag", () => {
+  const tags = [
+    "testing-20261001-aaaaaaa",
+    "testing-20261002-bbbbbbb",
+    "testing-20261003-ccccccc",
+    "testing-20261003-ddddddd",
+  ];
+  assert.equal(seriesCutoff(tags, 3), Date.parse("2026-10-01T00:00:00Z"));
+  assert.equal(seriesCutoff(tags, 10), Date.parse("2026-09-30T00:00:00Z"));
+  assert.equal(seriesCutoff([], 3), undefined);
+  assert.equal(seriesCutoff(tags, 0), undefined);
 });
