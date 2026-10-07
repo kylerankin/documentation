@@ -130,7 +130,7 @@ Docker Model Runner 在 `http://localhost:12434` 提供一个兼容 OpenAI 的�
 
 ## Alpaca 图形客户端
 
-对于轻量的聊天机器人使用，我们建议用户[安装 Alpaca](https://flathub.org/en/apps/com.jeffser.Alpaca)，在原生桌面应用中管理和与你的 LLM 模型聊天。Alpaca 原生支持 Nvidia 和 AMD[^1] 加速。
+对于轻量的聊天机器人使用，我们建议用户[安装 Alpaca](https://flathub.org/en/apps/com.jeffser.Alpaca)，在原生桌面应用中管理和与你的 LLM 模型聊天。Alpaca 原生支持 Nvidia 和 AMD 加速。
 
 :::tip[只需一键]
 

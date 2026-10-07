@@ -130,7 +130,7 @@ See the [Docker Model Runner documentation](https://docs.docker.com/model-runner
 
 ## Alpaca Graphical Client
 
-For light chatbot usage we recommend that users [install Alpaca](https://flathub.org/en/apps/com.jeffser.Alpaca) to manage and chat with your LLM models from within a native desktop application. Alpaca supports Nvidia and AMD[^1] acceleration natively.
+For light chatbot usage we recommend that users [install Alpaca](https://flathub.org/en/apps/com.jeffser.Alpaca) to manage and chat with your LLM models from within a native desktop application. Alpaca supports Nvidia and AMD acceleration natively.
 
 :::tip[Only a keystroke away]
 
